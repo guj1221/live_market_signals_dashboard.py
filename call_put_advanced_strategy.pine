@@ -71,6 +71,15 @@ useVolatilityRegime = input.bool(false, "Use ATR Volatility Regime")
 atrPercMin          = input.float(0.3, "Min ATR% (vol regime)", minval=0.0, step=0.1)
 atrPercMax          = input.float(5.0, "Max ATR% (vol regime)", minval=0.0, step=0.1)
 
+// HTF Structure Confirmation
+useHTFStructureFilter = input.bool(false, "Use HTF Structure Filter")
+htfStructureTF        = input.timeframe("240", "HTF for Structure")
+pivotLeft             = input.int(2, "HTF Pivot Left", minval=1, maxval=20)
+pivotRight            = input.int(2, "HTF Pivot Right", minval=1, maxval=20)
+
+// Alerts-only Mode
+alertsOnlyMode        = input.bool(false, "Alerts-only Mode (no orders)")
+
 // ===========================
 // Calculations — Tools
 // ===========================
@@ -102,6 +111,16 @@ htfEmaSlow = request.security(syminfo.tickerid, htf, ta.ema(close, emaSlowLen), 
 htfBull    = htfEmaFast > htfEmaSlow
 htfBear    = htfEmaFast < htfEmaSlow
 
+// HTF Structure via pivots (HH/HL vs LH/LL)
+htfPH = request.security(syminfo.tickerid, htfStructureTF, ta.pivothigh(high, pivotLeft, pivotRight))
+htfPL = request.security(syminfo.tickerid, htfStructureTF, ta.pivotlow(low,  pivotLeft, pivotRight))
+lastHigh = ta.valuewhen(not na(htfPH), htfPH, 0)
+prevHigh = ta.valuewhen(not na(htfPH), htfPH, 1)
+lastLow  = ta.valuewhen(not na(htfPL), htfPL, 0)
+prevLow  = ta.valuewhen(not na(htfPL), htfPL, 1)
+structBullOk = na(lastHigh) or na(prevHigh) or na(lastLow) or na(prevLow) ? true : (lastHigh > prevHigh and lastLow > prevLow)
+structBearOk = na(lastHigh) or na(prevHigh) or na(lastLow) or na(prevLow) ? true : (lastHigh < prevHigh and lastLow < prevLow)
+
 // ===========================
 // Entry Conditions
 // ===========================
@@ -124,6 +143,7 @@ filtersLong := filtersLong and (not useSupertrend or stBullOk)
 filtersLong := filtersLong and (not useVolumeFilter or volOk)
 filtersLong := filtersLong and (not useHTFFilter or htfBull)
 filtersLong := filtersLong and sessionOk and volRegimeOk
+filtersLong := filtersLong and (not useHTFStructureFilter or structBullOk)
 
 filtersShort = baseShort
 filtersShort := filtersShort and (not useRSIFilter or rsiShortOk)
@@ -132,6 +152,7 @@ filtersShort := filtersShort and (not useSupertrend or stBearOk)
 filtersShort := filtersShort and (not useVolumeFilter or volOk)
 filtersShort := filtersShort and (not useHTFFilter or htfBear)
 filtersShort := filtersShort and sessionOk and volRegimeOk
+filtersShort := filtersShort and (not useHTFStructureFilter or structBearOk)
 
 // Confirm on close to reduce repaint
 signalReady = not confirmOnClose or barstate.isconfirmed
@@ -147,10 +168,10 @@ stopDist   = atrSLMult * atr
 // ===========================
 // Orders
 // ===========================
-if longCondition
+if longCondition and not alertsOnlyMode
     strategy.entry(id="CALL", direction=strategy.long)
 
-if shortCondition
+if shortCondition and not alertsOnlyMode
     strategy.entry(id="PUT", direction=strategy.short)
 
 // ===========================
@@ -162,13 +183,13 @@ longTP   = close + stopDist * takeProfitRR
 shortStop = close + stopDist
 shortTP   = close - stopDist * takeProfitRR
 
-if strategy.position_size > 0
+if strategy.position_size > 0 and not alertsOnlyMode
     if useTrailingATR
         strategy.exit(id="CALL-X", from_entry="CALL", trail_points=atr * atrTrailMult)
     else
         strategy.exit(id="CALL-X", from_entry="CALL", stop=longStop, limit=longTP)
 
-if strategy.position_size < 0
+if strategy.position_size < 0 and not alertsOnlyMode
     if useTrailingATR
         strategy.exit(id="PUT-X", from_entry="PUT", trail_points=atr * atrTrailMult)
     else
