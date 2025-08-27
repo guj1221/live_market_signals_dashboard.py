@@ -62,6 +62,15 @@ showSignals       = input.bool(true,  "Show Entry Markers")
 showSupertrend    = input.bool(true,  "Plot Supertrend Line")
 shadePositions    = input.bool(true,  "Shade background while in position")
 
+// Session / Time Window
+useSessionFilter  = input.bool(false, "Use Session Filter")
+sessionInput      = input.session("0930-1600", "Session (exchange time)")
+
+// Volatility Regime (ATR%)
+useVolatilityRegime = input.bool(false, "Use ATR Volatility Regime")
+atrPercMin          = input.float(0.3, "Min ATR% (vol regime)", minval=0.0, step=0.1)
+atrPercMax          = input.float(5.0, "Max ATR% (vol regime)", minval=0.0, step=0.1)
+
 // ===========================
 // Calculations — Tools
 // ===========================
@@ -78,6 +87,14 @@ volSma = ta.sma(volume, volSmaLen)
 volOk  = volume > volSma
 
 atr = ta.atr(atrSLPeriod)
+
+// Session/time filter
+inSession = not na(time(timeframe.period, sessionInput))
+sessionOk = not useSessionFilter or inSession
+
+// ATR% regime filter
+atrPerc = atr / close * 100.0
+volRegimeOk = not useVolatilityRegime or (atrPerc >= atrPercMin and atrPerc <= atrPercMax)
 
 // HTF filters
 htfEmaFast = request.security(syminfo.tickerid, htf, ta.ema(close, emaFastLen), barmerge.gaps_off, barmerge.lookahead_off)
@@ -106,6 +123,7 @@ filtersLong := filtersLong and (not useMACDFilter or macdLongOk)
 filtersLong := filtersLong and (not useSupertrend or stBullOk)
 filtersLong := filtersLong and (not useVolumeFilter or volOk)
 filtersLong := filtersLong and (not useHTFFilter or htfBull)
+filtersLong := filtersLong and sessionOk and volRegimeOk
 
 filtersShort = baseShort
 filtersShort := filtersShort and (not useRSIFilter or rsiShortOk)
@@ -113,6 +131,7 @@ filtersShort := filtersShort and (not useMACDFilter or macdShortOk)
 filtersShort := filtersShort and (not useSupertrend or stBearOk)
 filtersShort := filtersShort and (not useVolumeFilter or volOk)
 filtersShort := filtersShort and (not useHTFFilter or htfBear)
+filtersShort := filtersShort and sessionOk and volRegimeOk
 
 // Confirm on close to reduce repaint
 signalReady = not confirmOnClose or barstate.isconfirmed
