@@ -1,0 +1,233 @@
+//@version=5
+strategy(
+    title         = "Call/Put Advanced Signals — Multi-Tool Logic",
+    shorttitle    = "CallPut Advanced",
+    overlay       = true,
+    initial_capital = 10000,
+    commission_type = strategy.commission.percent,
+    commission_value = 0.0,
+    slippage      = 0,
+    pyramiding    = 0,
+    calc_on_every_tick = true,
+    calc_on_order_fills = true,
+    default_qty_type = strategy.percent_of_equity,
+    default_qty_value = 1.0,
+    max_lines_count = 500,
+    max_labels_count = 500
+)
+
+// ===========================
+// Inputs — Filters & Tools
+// ===========================
+useRSIFilter      = input.bool(true,  "Use RSI Filter")
+useMACDFilter     = input.bool(true,  "Use MACD Filter")
+useSupertrend     = input.bool(true,  "Use Supertrend Filter")
+useVolumeFilter   = input.bool(true,  "Use Volume Filter")
+useHTFFilter      = input.bool(false, "Use Higher Timeframe Filter")
+confirmOnClose    = input.bool(true,  "Confirm on bar close (reduce repaint)")
+
+// Moving Averages
+emaFastLen        = input.int(50,  "EMA Fast Length", minval=1)
+emaSlowLen        = input.int(200, "EMA Slow Length", minval=1)
+
+// RSI
+rsiLen            = input.int(14, "RSI Length", minval=1)
+rsiBullThresh     = input.float(55.0, "RSI Bull Threshold", step=0.1)
+rsiBearThresh     = input.float(45.0, "RSI Bear Threshold", step=0.1)
+
+// MACD
+macdFastLen       = input.int(12, "MACD Fast", minval=1)
+macdSlowLen       = input.int(26, "MACD Slow", minval=1)
+macdSignalLen     = input.int(9,  "MACD Signal", minval=1)
+
+// Supertrend
+stAtrPeriod       = input.int(10, "Supertrend ATR Period", minval=1)
+stFactor          = input.float(3.0, "Supertrend Factor", minval=0.1, step=0.1)
+
+// Volume Filter
+volSmaLen         = input.int(20, "Volume SMA Length", minval=1)
+
+// Higher Timeframe
+htf               = input.timeframe("60", "HTF for Filter")
+
+// Risk & Exits
+atrSLPeriod       = input.int(14, "ATR Period (Stops/Targets)", minval=1)
+atrSLMult         = input.float(1.5, "ATR Stop Multiplier", minval=0.1, step=0.1)
+takeProfitRR      = input.float(2.0, "Take Profit R Multiple", minval=0.25, step=0.25)
+useTrailingATR    = input.bool(false, "Use Trailing ATR Exit")
+atrTrailMult      = input.float(2.0, "ATR Trail Multiplier", minval=0.1, step=0.1)
+
+// Plotting toggles
+showSignals       = input.bool(true,  "Show Entry Markers")
+showSupertrend    = input.bool(true,  "Plot Supertrend Line")
+shadePositions    = input.bool(true,  "Shade background while in position")
+
+// Session / Time Window
+useSessionFilter  = input.bool(false, "Use Session Filter")
+sessionInput      = input.session("0930-1600", "Session (exchange time)")
+
+// Volatility Regime (ATR%)
+useVolatilityRegime = input.bool(false, "Use ATR Volatility Regime")
+atrPercMin          = input.float(0.3, "Min ATR% (vol regime)", minval=0.0, step=0.1)
+atrPercMax          = input.float(5.0, "Max ATR% (vol regime)", minval=0.0, step=0.1)
+
+// HTF Structure Confirmation
+useHTFStructureFilter = input.bool(false, "Use HTF Structure Filter")
+htfStructureTF        = input.timeframe("240", "HTF for Structure")
+pivotLeft             = input.int(2, "HTF Pivot Left", minval=1, maxval=20)
+pivotRight            = input.int(2, "HTF Pivot Right", minval=1, maxval=20)
+
+// Alerts-only Mode
+alertsOnlyMode        = input.bool(false, "Alerts-only Mode (no orders)")
+
+// ===========================
+// Calculations — Tools
+// ===========================
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+
+rsi = ta.rsi(close, rsiLen)
+
+[macdLine, macdSignal, macdHist] = ta.macd(close, macdFastLen, macdSlowLen, macdSignalLen)
+
+[stValue, stDir] = ta.supertrend(stFactor, stAtrPeriod) // stDir: 1 bull, -1 bear
+
+volSma = ta.sma(volume, volSmaLen)
+volOk  = volume > volSma
+
+atr = ta.atr(atrSLPeriod)
+
+// Session/time filter
+inSession = not na(time(timeframe.period, sessionInput))
+sessionOk = not useSessionFilter or inSession
+
+// ATR% regime filter
+atrPerc = atr / close * 100.0
+volRegimeOk = not useVolatilityRegime or (atrPerc >= atrPercMin and atrPerc <= atrPercMax)
+
+// HTF filters
+htfEmaFast = request.security(syminfo.tickerid, htf, ta.ema(close, emaFastLen), barmerge.gaps_off, barmerge.lookahead_off)
+htfEmaSlow = request.security(syminfo.tickerid, htf, ta.ema(close, emaSlowLen), barmerge.gaps_off, barmerge.lookahead_off)
+htfBull    = htfEmaFast > htfEmaSlow
+htfBear    = htfEmaFast < htfEmaSlow
+
+// HTF Structure via pivots (HH/HL vs LH/LL)
+htfPH = request.security(syminfo.tickerid, htfStructureTF, ta.pivothigh(high, pivotLeft, pivotRight))
+htfPL = request.security(syminfo.tickerid, htfStructureTF, ta.pivotlow(low,  pivotLeft, pivotRight))
+lastHigh = ta.valuewhen(not na(htfPH), htfPH, 0)
+prevHigh = ta.valuewhen(not na(htfPH), htfPH, 1)
+lastLow  = ta.valuewhen(not na(htfPL), htfPL, 0)
+prevLow  = ta.valuewhen(not na(htfPL), htfPL, 1)
+structBullOk = na(lastHigh) or na(prevHigh) or na(lastLow) or na(prevLow) ? true : (lastHigh > prevHigh and lastLow > prevLow)
+structBearOk = na(lastHigh) or na(prevHigh) or na(lastLow) or na(prevLow) ? true : (lastHigh < prevHigh and lastLow < prevLow)
+
+// ===========================
+// Entry Conditions
+// ===========================
+baseLong = close > emaSlow and emaFast > emaSlow
+baseShort = close < emaSlow and emaFast < emaSlow
+
+rsiLongOk  = rsi > rsiBullThresh
+rsiShortOk = rsi < rsiBearThresh
+
+macdLongOk  = ta.crossover(macdHist, 0)
+macdShortOk = ta.crossunder(macdHist, 0)
+
+stBullOk = stDir == 1
+stBearOk = stDir == -1
+
+filtersLong = baseLong
+filtersLong := filtersLong and (not useRSIFilter or rsiLongOk)
+filtersLong := filtersLong and (not useMACDFilter or macdLongOk)
+filtersLong := filtersLong and (not useSupertrend or stBullOk)
+filtersLong := filtersLong and (not useVolumeFilter or volOk)
+filtersLong := filtersLong and (not useHTFFilter or htfBull)
+filtersLong := filtersLong and sessionOk and volRegimeOk
+filtersLong := filtersLong and (not useHTFStructureFilter or structBullOk)
+
+filtersShort = baseShort
+filtersShort := filtersShort and (not useRSIFilter or rsiShortOk)
+filtersShort := filtersShort and (not useMACDFilter or macdShortOk)
+filtersShort := filtersShort and (not useSupertrend or stBearOk)
+filtersShort := filtersShort and (not useVolumeFilter or volOk)
+filtersShort := filtersShort and (not useHTFFilter or htfBear)
+filtersShort := filtersShort and sessionOk and volRegimeOk
+filtersShort := filtersShort and (not useHTFStructureFilter or structBearOk)
+
+// Confirm on close to reduce repaint
+signalReady = not confirmOnClose or barstate.isconfirmed
+
+longCondition  = signalReady and filtersLong and strategy.position_size <= 0
+shortCondition = signalReady and filtersShort and strategy.position_size >= 0
+
+// ===========================
+// Stop distance (ATR-based)
+// ===========================
+stopDist   = atrSLMult * atr
+
+// ===========================
+// Orders
+// ===========================
+if longCondition and not alertsOnlyMode
+    strategy.entry(id="CALL", direction=strategy.long)
+
+if shortCondition and not alertsOnlyMode
+    strategy.entry(id="PUT", direction=strategy.short)
+
+// ===========================
+// Exits — ATR Stop/TP or Trailing ATR
+// ===========================
+longStop = close - stopDist
+longTP   = close + stopDist * takeProfitRR
+
+shortStop = close + stopDist
+shortTP   = close - stopDist * takeProfitRR
+
+if strategy.position_size > 0 and not alertsOnlyMode
+    if useTrailingATR
+        strategy.exit(id="CALL-X", from_entry="CALL", trail_points=atr * atrTrailMult)
+    else
+        strategy.exit(id="CALL-X", from_entry="CALL", stop=longStop, limit=longTP)
+
+if strategy.position_size < 0 and not alertsOnlyMode
+    if useTrailingATR
+        strategy.exit(id="PUT-X", from_entry="PUT", trail_points=atr * atrTrailMult)
+    else
+        strategy.exit(id="PUT-X", from_entry="PUT", stop=shortStop, limit=shortTP)
+
+// ===========================
+// Plots & Visuals
+// ===========================
+plot(emaFast, color=color.new(color.orange, 0), title="EMA Fast")
+plot(emaSlow, color=color.new(color.blue,   0), title="EMA Slow")
+
+plot(showSupertrend ? stValue : na, color=stDir == 1 ? color.new(color.green, 0) : color.new(color.red, 0), title="Supertrend")
+
+plotshape(showSignals and longCondition,  title="Call Buy Signal", style=shape.triangleup, location=location.belowbar, color=color.new(color.lime, 0), size=size.tiny, text="CALL")
+plotshape(showSignals and shortCondition, title="Put Sell Signal", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.tiny, text="PUT")
+
+// Background shading while in position
+bgcolor(shadePositions and strategy.position_size > 0 ? color.new(color.lime, 92) : na)
+bgcolor(shadePositions and strategy.position_size < 0 ? color.new(color.red,  92) : na)
+
+// ===========================
+// Alerts
+// ===========================
+alertcondition(longCondition,  title="Call Entry", message="CALL signal — {{ticker}} {{interval}} close={{close}}")
+alertcondition(shortCondition, title="Put Entry",  message="PUT signal — {{ticker}} {{interval}} close={{close}}")
+
+// Optional trend weakening alerts
+longWeak = strategy.position_size > 0 and (ta.crossunder(emaFast, emaSlow) or (useSupertrend and stBearOk))
+shortWeak = strategy.position_size < 0 and (ta.crossover(emaFast, emaSlow) or (useSupertrend and stBullOk))
+alertcondition(longWeak,  title="Long Trend Weakening",  message="Long trend weakening — {{ticker}} {{interval}}")
+alertcondition(shortWeak, title="Short Trend Weakening", message="Short trend weakening — {{ticker}} {{interval}}")
+
+// ===========================
+// Notes:
+// - This strategy uses multiple filters (EMA, RSI, MACD, Supertrend, Volume, HTF) to build
+//   robust Call/Put signals.
+// - ATR-based risk sizing estimates position quantity so a stop at ATR*mult risks ~risk% equity.
+// - Enable/disable filters to fit the instrument/market regime.
+// - Use confirmOnClose=true to minimize repaint from intrabar calculations.
+// - For alerts, add them from TradingView with the corresponding alertcondition titles.
+
